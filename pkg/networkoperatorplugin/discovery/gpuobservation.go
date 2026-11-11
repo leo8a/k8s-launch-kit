@@ -23,7 +23,8 @@ for d in "$root"/*; do
   class=$(cat "$d/class") || exit 1
   case "$class" in 0x030000|0x030200) ;; *) continue ;; esac
   [ ! -e "$d/physfn" ] || exit 1
-  printf 'GPU\t%s\n' "${d##*/}"
+  numa=$(cat "$d/numa_node" 2>/dev/null || echo -1)
+  printf 'GPU\t%s\t%s\n' "${d##*/}" "$numa"
   count=$((count + 1))
 done
 printf 'HOSTDONE\t%s\n' "$count"
@@ -65,10 +66,14 @@ echo '---DONE---'`
 type gpuHostObservation struct {
 	gpus map[string]bool
 	rdma map[string]string
+	// gpuNUMA maps a GPU's normalized PCI address to its sysfs numa_node. A
+	// value < 0 means the node was unknown (numa_node absent or -1). Used only
+	// as a fallback NIC->GPU pairing signal when PCIe proximity is flat.
+	gpuNUMA map[string]int
 }
 
 func parseGPUHostObservation(output string) (gpuHostObservation, error) {
-	result := gpuHostObservation{gpus: map[string]bool{}, rdma: map[string]string{}}
+	result := gpuHostObservation{gpus: map[string]bool{}, rdma: map[string]string{}, gpuNUMA: map[string]int{}}
 	aliasPCI := map[string]string{}
 	hostDone, done := false, false
 	for _, line := range strings.Split(strings.TrimSpace(output), "\n") {
@@ -78,7 +83,7 @@ func parseGPUHostObservation(output string) (gpuHostObservation, error) {
 		}
 		switch fields[0] {
 		case "GPU":
-			if len(fields) != 2 || hostDone {
+			if (len(fields) != 2 && len(fields) != 3) || hostDone {
 				return result, fmt.Errorf("invalid host GPU record")
 			}
 			pci := normalizePCI(fields[1])
@@ -86,6 +91,15 @@ func parseGPUHostObservation(output string) (gpuHostObservation, error) {
 				return result, fmt.Errorf("invalid or duplicate host GPU PCI")
 			}
 			result.gpus[pci] = true
+			// Optional numa_node (third field). A missing or unparseable value
+			// records -1 (unknown) so the NUMA fallback simply skips this GPU.
+			numa := -1
+			if len(fields) == 3 {
+				if parsed, err := strconv.Atoi(fields[2]); err == nil {
+					numa = parsed
+				}
+			}
+			result.gpuNUMA[pci] = numa
 		case "HOSTDONE":
 			if len(fields) != 2 || hostDone || fields[1] != strconv.Itoa(len(result.gpus)) {
 				return result, fmt.Errorf("incomplete host GPU enumeration")

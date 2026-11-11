@@ -43,6 +43,18 @@ func pairNodeGPUs(identities []nodePFIdentity, observations map[string]nodeGPUOb
 		result[node] = map[string]gpuTuple{}
 		for _, pci := range pcis {
 			best, candidates := commonNearestGPUs(retained[pci], observation)
+			// Fallback for flat topology: when the nearest proximity is SYS the
+			// PCIe fabric gives no GPU-local signal (e.g. GB300, where the
+			// ConnectX-8 SuperNICs attach via the Grace C2C/NVLink fabric, so
+			// nvidia-smi reports every GPU<->NIC pair as SYS). Narrow candidates
+			// to GPUs sharing the NIC's NUMA node; pickConnectedGPU then
+			// round-robins within that NUMA-local set. Skipped when NUMA is
+			// unknown, preserving the original candidates.
+			if best == proxSYS {
+				if narrowed := gpusOnNICNUMA(pci, candidates, observation); len(narrowed) > 0 {
+					candidates = narrowed
+				}
+			}
 			chosen := pickConnectedGPU(candidates, pci, observation.data.gpuPCI, usage)
 			if chosen < 0 {
 				continue
@@ -130,6 +142,7 @@ func applyGPUObservations(ctx context.Context, groups []config.ClusterConfig, id
 
 		complete := true
 		var reasons []string
+		var skipped []string
 		for p := range group.PFs {
 			pf := &group.PFs[p]
 			pf.ConnectedGPU, pf.ConnectedGPUPCIAddress, pf.GPUProximity = "", "", ""
@@ -137,6 +150,14 @@ func applyGPUObservations(ctx context.Context, groups []config.ClusterConfig, id
 			pfComplete, count := true, 0
 			for _, identity := range identities {
 				if identity.groupIndex != i || identity.retainedPCI != normalizePCI(pf.PciAddress) {
+					continue
+				}
+				// Tolerate a per-node probe failure: a flaky or timed-out worker
+				// must not discard GPU pairing for the whole homogeneous group.
+				// Skip it and rely on the workers that produced evidence; if every
+				// worker failed, count stays 0 and the PF is left unset below.
+				if observations[identity.node].err != nil {
+					skipped = append(skipped, identity.node+": "+truncateForLog(observations[identity.node].err.Error(), 180))
 					continue
 				}
 				count++
@@ -147,8 +168,6 @@ func applyGPUObservations(ctx context.Context, groups []config.ClusterConfig, id
 					switch {
 					case identity.missing != "":
 						reason += ": " + identity.missing
-					case observations[identity.node].err != nil:
-						reason += ": " + truncateForLog(observations[identity.node].err.Error(), 180)
 					case !found:
 						reason += ": incomplete PCI/RDMA or matrix coverage"
 					default:
@@ -167,10 +186,16 @@ func applyGPUObservations(ctx context.Context, groups []config.ClusterConfig, id
 		if complete {
 			reclassifyAndReassignRails(group.PFs)
 		}
-		if len(reasons) > 0 || !complete {
+		slices.Sort(skipped)
+		skipped = slices.Compact(skipped)
+		switch {
+		case len(reasons) > 0 || !complete:
+			reasons = append(reasons, skipped...)
 			slices.Sort(reasons)
 			reasons = slices.Compact(reasons)
 			ui.FromContext(ctx).Warning("GPU topology incomplete for group %q; unavailable GPU fields stay unset and hardware/preset fallback applies: %s", group.Identifier, strings.Join(reasons, "; "))
+		case len(skipped) > 0:
+			ui.FromContext(ctx).Warning("GPU topology for group %q resolved from a subset of workers; skipped unreachable worker probe(s): %s", group.Identifier, strings.Join(skipped, "; "))
 		}
 	}
 }
@@ -198,4 +223,48 @@ func reconcileGPUPCIAddresses(group *config.ClusterConfig, observations map[stri
 			pf.ConnectedGPUPCIAddress = pci
 		}
 	}
+}
+
+// gpusOnNICNUMA narrows GPU candidates to those sharing the NIC's NUMA node.
+// Used as a fallback when PCIe proximity is non-discriminating (flat SYS). It
+// returns nil when the NIC NUMA is unknown or no candidate GPU has a known
+// matching node, so callers keep the original (proximity-derived) candidates.
+func gpusOnNICNUMA(nicPCI string, candidates []int, observation nodeGPUObservation) []int {
+	nicNUMA, ok := nicNUMANode(nicPCI, observation)
+	if !ok {
+		return nil
+	}
+	var narrowed []int
+	for _, index := range candidates {
+		gpuPCI := observation.data.gpuPCI[index]
+		if gpuPCI == "" {
+			continue
+		}
+		numa, ok := observation.host.gpuNUMA[gpuPCI]
+		if !ok || numa < 0 {
+			continue
+		}
+		if numa == nicNUMA {
+			narrowed = append(narrowed, index)
+		}
+	}
+	return narrowed
+}
+
+// nicNUMANode returns the NIC's NUMA node from the per-PF discovery attributes.
+// The boolean is false when the attribute is absent or not a non-negative int.
+func nicNUMANode(nicPCI string, observation nodeGPUObservation) (int, bool) {
+	attributes, ok := observation.data.pfAttributes[nicPCI]
+	if !ok {
+		return 0, false
+	}
+	value := attributes[pfAttributeNUMANode]
+	if value == "" {
+		return 0, false
+	}
+	numa, err := strconv.Atoi(value)
+	if err != nil || numa < 0 {
+		return 0, false
+	}
+	return numa, true
 }

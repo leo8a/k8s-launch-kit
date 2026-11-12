@@ -518,6 +518,8 @@ func TestNicConfigurationTemplate_AllReasonsClassified(t *testing.T) {
 		{"UpdateSuccessful but True", consts.UpdateSuccessfulReason, "True", StateInProgress},
 		{"UpdateSuccessful but Unknown", consts.UpdateSuccessfulReason, "Unknown", StateInProgress},
 		{"UpdateSuccessful without status", consts.UpdateSuccessfulReason, "", StateInProgress},
+		{"PartiallyApplied→success", consts.PartiallyAppliedReason, "False", StateSuccess},
+		{"PartiallyApplied but True", consts.PartiallyAppliedReason, "True", StateInProgress},
 		{"UpdateStarted→in-progress", consts.UpdateStartedReason, "True", StateInProgress},
 		{"PendingReboot→in-progress", consts.PendingRebootReason, "True", StateInProgress},
 		{"PendingFirmwareUpdate→in-progress", consts.PendingFirmwareUpdateReason, "False", StateInProgress},

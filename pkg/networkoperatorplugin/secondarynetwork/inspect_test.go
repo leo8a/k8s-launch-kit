@@ -163,17 +163,34 @@ var _ = Describe("deployment ownership boundary", func() {
 		_, err = CheckPolicy(ctx, fixtureClient(), fixturePolicy(), nil, config.FlavorOCP)
 		Expect(err).To(MatchError(context.Canceled))
 	})
-	It("records OpenShift network-operator installers during discovery and ignores foreign DaemonSets", func() {
+	It("verifies OpenShift network-operator installers and ignores foreign DaemonSets", func() {
 		ctx := context.Background()
 		yes := true
-		installer := func(component string) *appsv1.DaemonSet {
+		installer := func(component string) (*appsv1.DaemonSet, *corev1.Pod) {
 			ds := fixtureInstaller(openShiftInstallers[component], "quay.io/openshift-release-dev/ocp-v4.0-art-dev@sha256:abc", "/bin/bash")
 			ds.Namespace = "openshift-multus"
 			ds.OwnerReferences = []metav1.OwnerReference{{APIVersion: "operator.openshift.io/v1", Kind: "Network", Name: "cluster", UID: "network-uid", Controller: &yes}}
-			return ds
+			pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: ds.Name + "-a", Namespace: ds.Namespace, OwnerReferences: []metav1.OwnerReference{owner("DaemonSet", ds.Name, string(ds.UID))}}, Spec: corev1.PodSpec{NodeName: "worker-a"}, Status: corev1.PodStatus{Phase: corev1.PodRunning, Conditions: []corev1.PodCondition{{Type: corev1.PodReady, Status: corev1.ConditionTrue}}}}
+			return ds, pod
 		}
-		multus, plugins := installer(Multus), installer(CNIPlugins)
+		multus, multusPod := installer(Multus)
+		plugins, pluginsPod := installer(CNIPlugins)
+		checks, err := CheckPolicy(ctx, fixtureClient(multus, multusPod, plugins, pluginsPod), fixturePolicy(), []string{"worker-a"}, config.FlavorOCP)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(checks).To(HaveLen(2))
+		for _, check := range checks {
+			Expect(check.Skipped).To(BeFalse())
+			Expect(check.Failed || check.Progressing).To(BeFalse())
+			Expect(check.Reason).To(ContainSubstring("openshift-multus/"))
+		}
+		checks, err = CheckPolicy(ctx, fixtureClient(multus, multusPod, plugins, pluginsPod), fixturePolicy(), []string{"worker-a", "worker-b"}, config.FlavorOCP)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(checks[0].Progressing).To(BeTrue())
 		multus.OwnerReferences = nil
+		checks, err = CheckPolicy(ctx, fixtureClient(multus, multusPod), fixturePolicy(), []string{"worker-a"}, config.FlavorOCP)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(checks[0].Skipped).To(BeTrue())
+		Expect(checks[0].Reason).To(ContainSubstring("managed by OpenShift"))
 		observation, err := DiscoverEvidence(ctx, fixtureClient(multus, plugins), config.FlavorOCP)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(observation.Multus.Status).To(Equal(config.InstallerNotDetected)) // foreign owner

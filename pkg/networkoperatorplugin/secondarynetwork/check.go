@@ -68,11 +68,23 @@ func CheckPolicy(ctx context.Context, c client.Reader, desired *unstructured.Uns
 	if ocp {
 		var checks []Check
 		for _, component := range []string{Multus, CNIPlugins} {
-			checks = append(checks, Check{
+			check := Check{
 				Component: component,
 				Skipped:   true,
 				Reason:    "unverified external prerequisite: " + component + " is managed by OpenShift; installer health requires platform and runtime validation",
-			})
+			}
+			ds, err := openShiftInstaller(ctx, c, component)
+			if err != nil {
+				if ctx.Err() != nil {
+					return nil, ctx.Err()
+				}
+				check.Reason = "unverified external prerequisite: inspect OpenShift installer: " + err.Error()
+			} else if ds != nil {
+				if check, err = checkHealth(ctx, c, component, *ds, workers); err != nil {
+					return nil, err
+				}
+			}
+			checks = append(checks, check)
 		}
 		return checks, nil
 	}

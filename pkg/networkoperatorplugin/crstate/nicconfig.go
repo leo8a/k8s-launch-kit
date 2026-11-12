@@ -575,10 +575,13 @@ func classifyConfiguration(device *unstructured.Unstructured, byType map[string]
 		reason, _, _ := unstructured.NestedString(cond, "reason")
 		message, _, _ := unstructured.NestedString(cond, "message")
 		switch reason {
-		case consts.UpdateSuccessfulReason:
+		case consts.UpdateSuccessfulReason, consts.PartiallyAppliedReason:
+			// Both are terminal at status False: UpdateSuccessful applied every
+			// param; PartiallyApplied applied what the device supports and skipped
+			// unsupported spec params (nothing more will happen, so do not block).
 			status, _, _ := unstructured.NestedString(cond, "status")
 			if status != "False" {
-				return StateInProgress, fmt.Sprintf("ConfigUpdateInProgress=%s with reason UpdateSuccessful; waiting for status False", status)
+				return StateInProgress, fmt.Sprintf("ConfigUpdateInProgress=%s with reason %s; waiting for status False", status, reason)
 			}
 			// proceed to firmware check below if present
 		case consts.UpdateStartedReason, consts.PendingRebootReason:

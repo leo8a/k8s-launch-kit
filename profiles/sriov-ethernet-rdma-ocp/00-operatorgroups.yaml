@@ -1,0 +1,11 @@
+{{- range .OCPOperatorInstall.Operators }}
+---
+apiVersion: operators.coreos.com/v1
+kind: OperatorGroup
+metadata:
+  name: "{{ .Package }}"
+  namespace: "{{ .Namespace }}"
+spec:
+  targetNamespaces:
+    - "{{ .Namespace }}"
+{{- end }}

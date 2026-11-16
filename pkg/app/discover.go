@@ -168,6 +168,7 @@ func (l *Launcher) discoverClusterConfig() error {
 	finalInput.Config.DiscoveredSecondaryNetwork = discoveryConfig.DiscoveredSecondaryNetwork
 	finalInput.Config.DiscoveredDOCAHost = discoveryConfig.DiscoveredDOCAHost
 	finalInput.Config.DiscoveredDOCAHostScope = nil
+	finalInput.Config.OCPOperatorInstall = discoveryConfig.OCPOperatorInstall
 	if l.options.UserConfig != "" {
 		preserveSpectrumXRailAssignments(rawInput.Config.ClusterConfig, finalInput.Config.ClusterConfig, l.ui)
 	}
@@ -230,6 +231,9 @@ func (l *Launcher) discoverClusterConfig() error {
 		paths := []string{"clusterConfig", "discoveredSecondaryNetwork", "discoveredDocaHost"}
 		if rawInput.Config.DiscoveredDOCAHostScope != nil {
 			paths = append(paths, "discoveredDocaHostScope")
+		}
+		if finalConfig.OCPOperatorInstall != nil {
+			paths = append(paths, "ocpOperatorInstall")
 		}
 		inputs := configflags.Infer(l.options)
 		for _, override := range inputs.Overrides {

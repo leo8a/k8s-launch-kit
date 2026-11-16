@@ -5,7 +5,14 @@
 package networkoperatorplugin
 
 import (
+	"context"
+	"fmt"
+
 	"github.com/nvidia/k8s-launch-kit/pkg/config"
+	"github.com/nvidia/k8s-launch-kit/pkg/ui"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 // Offline fallbacks, used when discover cannot read a value from a PackageManifest.
@@ -46,6 +53,69 @@ func DefaultOCPOperatorSubscriptions(cfg *config.LaunchKitConfig) []config.OCPOp
 		})
 	}
 	return subs
+}
+
+var packageManifestListGVK = schema.GroupVersionKind{
+	Group:   "packages.operators.coreos.com",
+	Version: "v1",
+	Kind:    "PackageManifestList",
+}
+
+// DiscoverOCPOperatorInstall resolves each configured operator's
+// channel/source/sourceNamespace from its OLM PackageManifest and stores the
+// result in cfg.OCPOperatorInstall. A package with no manifest keeps the offline
+// fallback and warns.
+func DiscoverOCPOperatorInstall(ctx context.Context, c client.Client, cfg *config.LaunchKitConfig, out ui.Output) error {
+	if cfg == nil || cfg.Flavor != config.FlavorOCP {
+		return nil
+	}
+	operators := DefaultOCPOperatorSubscriptions(cfg)
+
+	list := &unstructured.UnstructuredList{}
+	list.SetGroupVersionKind(packageManifestListGVK)
+	if err := c.List(ctx, list); err != nil {
+		return fmt.Errorf("list OLM PackageManifests: %w", err)
+	}
+
+	byPackage := make(map[string]*unstructured.Unstructured, len(list.Items))
+	for i := range list.Items {
+		item := &list.Items[i]
+		name, _, _ := unstructured.NestedString(item.Object, "status", "packageName")
+		if name == "" {
+			name = item.GetName()
+		}
+		if _, seen := byPackage[name]; !seen {
+			byPackage[name] = item
+		}
+	}
+
+	for i := range operators {
+		op := &operators[i]
+		manifest, ok := byPackage[op.Package]
+		if !ok {
+			if out != nil {
+				out.Warning(
+					"No OLM PackageManifest found for %q; using fallback channel %q / source %q. Verify the catalog is available before deploy.",
+					op.Package, op.Channel, op.Source)
+			}
+			continue
+		}
+		if channel, _, _ := unstructured.NestedString(manifest.Object, "status", "defaultChannel"); channel != "" {
+			op.Channel = channel
+		}
+		if source, _, _ := unstructured.NestedString(manifest.Object, "status", "catalogSource"); source != "" {
+			op.Source = source
+		}
+		if sourceNS, _, _ := unstructured.NestedString(manifest.Object, "status", "catalogSourceNamespace"); sourceNS != "" {
+			op.SourceNamespace = sourceNS
+		}
+	}
+
+	cfg.OCPOperatorInstall = &config.OCPOperatorInstallConfig{
+		Manage:    true,
+		Operators: operators,
+	}
+	return nil
 }
 
 // EnsureOCPOperatorInstallDefaults backfills the ocpOperatorInstall block with

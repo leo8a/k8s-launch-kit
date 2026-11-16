@@ -68,6 +68,10 @@ type NetworkOperatorPlugin struct {
 	// restores the legacy one-rail-per-PF behaviour (handy on dev setups).
 	CollapseNicRails bool
 
+	// ManageOperators (--manage-operators) opts into OLM install-artifact
+	// generation; on OCP, discovery resolves it from PackageManifests.
+	ManageOperators bool
+
 	// PresetCatalog is the topology-preset source selected for this launcher
 	// invocation. Nil preserves the historical implicit disk/embedded lookup.
 	PresetCatalog *presets.Catalog
@@ -185,14 +189,24 @@ func (p *NetworkOperatorPlugin) SelectProfile(config *config.LaunchKitConfig) (*
 // forwarded as discovery.Options so library callers can invoke the same
 // flow via discovery.Discover without constructing a NetworkOperatorPlugin.
 func (p *NetworkOperatorPlugin) DiscoverClusterConfig(ctx context.Context, c client.Client, cfg *config.LaunchKitConfig) error {
-	if err := CheckOCPOperators(ctx,c,cfg,false);err!=nil{return err}
-	return discovery.DiscoverClusterConfig(ctx, c, p.RESTConfig, cfg, discovery.Options{
+	if err := CheckOCPOperators(ctx, c, cfg, false); err != nil {
+		return err
+	}
+	if err := discovery.DiscoverClusterConfig(ctx, c, p.RESTConfig, cfg, discovery.Options{
 		WorkerNodes:      p.DiscoveryWorkers,
 		NodeSelector:     p.NodeSelector,
 		KeepNamespace:    p.KeepNamespace,
 		CollapseNicRails: p.CollapseNicRails,
 		PresetCatalog:    p.PresetCatalog,
-	})
+	}); err != nil {
+		return err
+	}
+	if p.ManageOperators && cfg.Flavor == config.FlavorOCP {
+		if err := DiscoverOCPOperatorInstall(ctx, c, cfg, p.Output); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 var _ plugin.Plugin = &NetworkOperatorPlugin{}

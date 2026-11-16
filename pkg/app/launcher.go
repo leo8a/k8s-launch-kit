@@ -137,6 +137,7 @@ func (l *Launcher) RunContext(ctx context.Context) error {
 				NodeSelector:     parseNodeSelector(l.options.NodeSelector),
 				KeepNamespace:    l.options.KeepNamespace,
 				CollapseNicRails: l.options.CollapseNicRails,
+				ManageOperators:  l.options.ManageOperators,
 				PresetCatalog:    l.presetCatalog,
 			}
 		default:
